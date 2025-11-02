@@ -1,21 +1,11 @@
-#include<FL/Fl.H> 
-#include<FL/Fl_Box.H>
-#include<FL/Fl_Window.H>
-#include<FL/Fl_Widget.H>
-#include<FL/fl_draw.H>
+#include <FL/Fl.H>
+#include <FL/Fl_Window.H>
+#include "EditorWidget.h"
 
-int main(){
-Fl_Window window(1280,720, "Text Editor");
-window.color(0x14141400);
-
-Fl_Box box(40,40,1200,50);
-box.box(FL_UP_BOX);
-box.color(0x1E1E1E00);
-box.labelsize(24);
-box.labelfont(FL_HELVETICA_BOLD);
-box.labelcolor(0xFFFFFF00);
-
-window.end();
-window.show();
-return Fl::run();
+int main() {
+    Fl_Window win(800, 600, "Simple C++ Text Editor");
+    EditorWidget editor(10, 10, 780, 580);
+    win.end();
+    win.show();
+    return Fl::run();
 }
