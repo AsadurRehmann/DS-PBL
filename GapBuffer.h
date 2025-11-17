@@ -4,7 +4,6 @@
 #include<string>
 #include<algorithm>
 using namespace std;
-
 class GapBuffer{
 
     vector<char> buf;
