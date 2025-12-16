@@ -13,6 +13,7 @@
 #include <cstring>
 #include <string>
 #include <cstdio>
+#include <cmath>
 #include <chrono>
 
 // Globals used by editor and callbacks
@@ -26,17 +27,23 @@ static int last_action_pos = -1;
 static bool paste_in_progress = false;
 static bool ignore_modify_callback = false;
 static int paste_pos = 0;
+static bool show_grid = false; // toggle with Ctrl+G
+static class LineNumbers* lineNumWidget = nullptr;
 
 // Forward declarations for undo/redo used inside MyTextEditor
 void undo_action();
 void redo_action();
 
+// Forward declaration for LineNumbers (will be defined after MyTextEditor)
+class LineNumbers;
+
 class MyTextEditor : public Fl_Text_Editor {
 public:
     bool caret_visible;
     double blink_interval;
+    int lineNumWidth;  // Width reserved for line numbers
 
-    MyTextEditor(int X, int Y, int W, int H) : Fl_Text_Editor(X, Y, W, H) {
+    MyTextEditor(int X, int Y, int W, int H, int lnw = 0) : Fl_Text_Editor(X, Y, W, H), lineNumWidth(lnw) {
         caret_visible = true;
         blink_interval = 0.5; // seconds
     }
@@ -74,6 +81,13 @@ public:
             }
             if ((state & FL_CTRL) && (key == 'y' || key == 'Y')) {
                 redo_action();
+                return 1;
+            }
+
+            // Handle Grid Toggle (Ctrl+G)
+            if ((state & FL_CTRL) && (key == 'g' || key == 'G')) {
+                show_grid = !show_grid;
+                redraw();
                 return 1;
             }
 
@@ -229,9 +243,67 @@ public:
         return Fl_Text_Editor::handle(event);
     }
 
-    // Draw the editor and then draw a custom caret
+    // Draw the editor and then draw a custom caret and grid
     void draw() override {
         Fl_Text_Editor::draw();
+
+        // Draw grid background if enabled
+        if (show_grid) {
+            fl_font(FL_COURIER, textsize());
+
+            // Measure origin of visible text and derive char cell size using position_to_xy
+            int visPos = xy_to_position(1, 1);
+            int ox = 0, oy = 0;
+            position_to_xy(visPos, &ox, &oy); // ox,oy relative to editor
+            int originXAbs = this->x() + ox;
+            int originYAbs = this->y() + oy;
+
+            int charWidth = 0;
+            int charHeight = 0;
+            const char* fulltext = buffer() ? buffer()->text() : nullptr;
+            int buflen = buffer() ? buffer()->length() : 0;
+
+            // Measure width by comparing position of visPos and visPos+1 (two consecutive chars on same line)
+            if (visPos + 1 <= buflen && fulltext && fulltext[visPos] != '\n') {
+                int x2 = 0, y2 = 0;
+                position_to_xy(visPos + 1, &x2, &y2);
+                charWidth = x2 - ox;
+            }
+            // Fallback: use measured monospace width
+            if (charWidth <= 0) charWidth = fl_width("M");
+
+            // Measure height by comparing position of visPos and first char of next line
+            int nextLinePos = visPos;
+            while (nextLinePos < buflen && fulltext && fulltext[nextLinePos] != '\n') ++nextLinePos;
+            if (nextLinePos < buflen && fulltext && fulltext[nextLinePos] == '\n') ++nextLinePos;
+            if (nextLinePos <= buflen) {
+                int nx = 0, ny = 0;
+                position_to_xy(nextLinePos, &nx, &ny);
+                charHeight = (this->y() + ny) - originYAbs;
+            }
+            // Fallback: use font line height
+            if (charHeight <= 0) charHeight = fl_height();
+
+            // Use a subtle grid color
+            fl_color(fl_rgb_color(35, 35, 35));  // Darker grid
+            fl_line_style(FL_SOLID, 1);
+
+            // Vertical lines (for character columns) aligned to visible origin
+            int startV = originXAbs - ((originXAbs - (this->x() + lineNumWidth)) % charWidth);
+            for (int gx = startV; gx < this->x() + this->w(); gx += charWidth) {
+                if (gx <= this->x() + lineNumWidth) continue;
+                fl_line(gx, this->y(), gx, this->y() + this->h());
+            }
+
+            // Horizontal lines (for rows) aligned to visible origin
+            int startH = originYAbs - ((originYAbs - this->y()) % charHeight);
+            for (int gy = startH; gy < this->y() + this->h(); gy += charHeight) {
+                fl_line(this->x(), gy, this->x() + this->w(), gy);
+            }
+            fl_line_style(FL_SOLID, 0);  // Reset line style
+        }
+
+        // line numbers drawn by gutter widget
 
         if (Fl::focus() == this && caret_visible) {
             int ipos = insert_position();
@@ -255,6 +327,127 @@ public:
             int cy = this->y() + this->h() / 2 - 7;
             fl_draw(hint, cx, cy + 10);
         }
+    }
+};
+
+// Line number widget (just a marker for width, actual drawing in MyTextEditor)
+class LineNumbers : public Fl_Widget {
+public:
+    MyTextEditor* editor;
+    LineNumbers(int X, int Y, int W, int H, MyTextEditor* e = nullptr) : Fl_Widget(X, Y, W, H), editor(e) {
+        box(FL_FLAT_BOX);
+        color(FL_BLACK);
+        labelcolor(FL_WHITE);
+    }
+    void setEditor(MyTextEditor* e) {
+        editor = e;
+    }
+    void draw() override {
+        // Draw gutter background
+        fl_push_clip(x(), y(), w(), h());
+        // Gutter color (muted dark)
+        fl_color(fl_rgb_color(24, 26, 30));
+        fl_rectf(x(), y(), w(), h());
+
+        if (!editor || !editor->buffer()) {
+            fl_pop_clip();
+            return;
+        }
+
+        Fl_Text_Buffer* buf = editor->buffer();
+        const char* text = buf->text();
+        int buflen = buf->length();
+
+        // Determine top visible position by scanning line starts and using position_to_xy
+        int topPos = 0;
+        int sx = 0, sy = 0;
+        int posScan = 0;
+        int buflen_local = buflen;
+        int syAbs = y();
+        while (posScan <= buflen_local) {
+            editor->position_to_xy(posScan, &sx, &sy); // sx,sy are relative to editor
+            int sy_absolute = editor->y() + sy;
+            if (sy_absolute >= y()) { topPos = posScan; syAbs = sy_absolute; break; }
+            int np = posScan;
+            while (np < buflen_local && text[np] != '\n') ++np;
+            if (np < buflen_local && text[np] == '\n') ++np; // move to start of next line
+            if (np == posScan) break;
+            posScan = np;
+        }
+
+        // Determine current line (for highlight)
+        int ipos = editor->insert_position();
+        int curLine = 1;
+        for (int i = 0; i < ipos && i < buflen; ++i) if (text[i] == '\n') ++curLine;
+
+        // Count line number at topPos
+        int lineNum = 1;
+        for (int i = 0; i < topPos && i < buflen; ++i) if (text[i] == '\n') ++lineNum;
+
+        // Fonts and colors
+        fl_font(FL_COURIER, editor->textsize());
+        Fl_Color numColor = fl_rgb_color(140, 150, 160); // muted gray
+        Fl_Color curNumColor = fl_rgb_color(220, 220, 255); // lighter for current line
+
+        // Measure charHeight similar to editor grid measurement
+        int charHeight = fl_height();
+        int buflen2 = buflen;
+        int nextLinePos2 = topPos;
+        while (nextLinePos2 < buflen2 && text[nextLinePos2] != '\n') ++nextLinePos2;
+        if (nextLinePos2 < buflen2 && text[nextLinePos2] == '\n') ++nextLinePos2;
+        int sxAbs = editor->x() + sx;
+        int drawY = syAbs;
+        if (nextLinePos2 <= buflen2) {
+            int nx=0, ny=0; editor->position_to_xy(nextLinePos2, &nx, &ny);
+            int nyAbs = editor->y() + ny;
+            if (nyAbs > syAbs) charHeight = nyAbs - syAbs;
+        }
+        int curPos = topPos;
+
+        // Draw current-line highlight across gutter
+        // Find y position of current line if visible
+        int tempPos = topPos;
+        int tempY = syAbs;
+        int tempLine = lineNum;
+        int curLineY = -1;
+        while (tempY < y() + h()) {
+            if (tempLine == curLine) { curLineY = tempY; break; }
+            // advance
+            int np = tempPos;
+            while (np < buflen && text[np] != '\n') ++np;
+            if (np < buflen && text[np] == '\n') ++np;
+            tempPos = np;
+            tempY += charHeight;
+            ++tempLine;
+        }
+        if (curLineY >= 0) {
+            fl_color(fl_rgb_color(36, 40, 48));
+            fl_rectf(x(), curLineY, w(), charHeight);
+        }
+
+        // Draw numbers
+        while (drawY < y() + h()) {
+            char bufnum[32];
+            snprintf(bufnum, sizeof(bufnum), "%d", lineNum);
+            int tw = fl_width(bufnum);
+            fl_color(lineNum == curLine ? curNumColor : numColor);
+            fl_draw(bufnum, x() + w() - tw - 10, drawY + charHeight - 3);
+
+            // Advance to next line in buffer
+            if (curPos >= buflen) {
+                ++lineNum;
+                drawY += charHeight;
+                continue;
+            }
+            int nextPos = curPos;
+            while (nextPos < buflen && text[nextPos] != '\n') ++nextPos;
+            if (nextPos < buflen && text[nextPos] == '\n') ++nextPos;
+            curPos = nextPos;
+            ++lineNum;
+            drawY += charHeight;
+        }
+
+        fl_pop_clip();
     }
 };
 
@@ -422,16 +615,16 @@ int main(int argc, char** argv) {
 
     Fl_Menu_Bar* menubar = new Fl_Menu_Bar(0, 0, win->w(), 28);
     menubar->menu(menuitems);
-    // Minimal dark menu styling
+    // Minimal modern dark menu styling
     menubar->box(FL_FLAT_BOX);
-    menubar->color(FL_BLACK);
-    menubar->labelcolor(FL_WHITE);
+    menubar->color(fl_rgb_color(11, 17, 22));
+    menubar->labelcolor(fl_rgb_color(200, 210, 220));
     menubar->textsize(12);
 
     // Toolbar (minimal, flat, icon-like buttons)
     Fl_Group* toolbar = new Fl_Group(0, menubar->h(), win->w(), 36);
     toolbar->box(FL_FLAT_BOX);
-    toolbar->color(FL_BLACK);
+    toolbar->color(fl_rgb_color(11, 17, 22));
     int bx = 6;
     int bw = 36;
     Fl_Button* bopen = new Fl_Button(bx, menubar->h() + 6, bw, 24, "📂"); bx += bw + 6;
@@ -439,26 +632,37 @@ int main(int argc, char** argv) {
     Fl_Button* bundo = new Fl_Button(bx, menubar->h() + 6, bw, 24, "↶"); bx += bw + 6;
     Fl_Button* bredo = new Fl_Button(bx, menubar->h() + 6, bw, 24, "↷"); bx += bw + 6;
     bopen->box(FL_FLAT_BOX); bsave->box(FL_FLAT_BOX); bundo->box(FL_FLAT_BOX); bredo->box(FL_FLAT_BOX);
-    bopen->color(FL_BLACK); bsave->color(FL_BLACK); bundo->color(FL_BLACK); bredo->color(FL_BLACK);
-    bopen->labelcolor(FL_WHITE); bsave->labelcolor(FL_WHITE); bundo->labelcolor(FL_WHITE); bredo->labelcolor(FL_WHITE);
+    bopen->color(fl_rgb_color(11, 17, 22)); bsave->color(fl_rgb_color(11, 17, 22)); bundo->color(fl_rgb_color(11, 17, 22)); bredo->color(fl_rgb_color(11, 17, 22));
+    bopen->labelcolor(fl_rgb_color(180, 190, 200)); bsave->labelcolor(fl_rgb_color(180, 190, 200)); bundo->labelcolor(fl_rgb_color(180, 190, 200)); bredo->labelcolor(fl_rgb_color(180, 190, 200));
     bopen->labelsize(14); bsave->labelsize(14); bundo->labelsize(14); bredo->labelsize(14);
     bopen->callback(open_cb); bsave->callback(save_cb); bundo->callback(undo_cb); bredo->callback(redo_cb);
     toolbar->end();
 
     textbuf = new Fl_Text_Buffer();
-    MyTextEditor* editor = new MyTextEditor(0, menubar->h() + 36, win->w(), win->h() - menubar->h() - 36 - 22);
+    
+    // Create line numbers widget (width ~50px for 4-digit line numbers)
+    int lineNumWidth = 50;
+    int editorX = lineNumWidth;
+    int editorY = menubar->h() + 36;
+    int editorH = win->h() - menubar->h() - 36 - 22;
+    
+    LineNumbers* lineNum = new LineNumbers(0, editorY, lineNumWidth, editorH);
+    lineNumWidget = lineNum;
+    
+    MyTextEditor* editor = new MyTextEditor(editorX, editorY, win->w() - editorX, editorH, lineNumWidth);
     editor->buffer(textbuf);
+    lineNum->setEditor(editor);  // Give line numbers access to editor for line counting
     // Editor modern minimal styling
     editor->box(FL_FLAT_BOX);
-    editor->color(FL_BLACK);
+    editor->color(fl_rgb_color(8, 12, 16));
     editor->textfont(FL_COURIER);
     editor->textsize(14);
 
-    // Status bar
-    statusBox = new Fl_Box(0, win->h() - 22, win->w(), 22, "Ln 1, Col 1");
+    // Status bar (aligned with editor)
+    statusBox = new Fl_Box(lineNumWidth, win->h() - 22, win->w() - lineNumWidth, 22, "Ln 1, Col 1");
     statusBox->box(FL_FLAT_BOX);
-    statusBox->color(FL_BLACK);
-    statusBox->labelcolor(FL_WHITE);
+    statusBox->color(fl_rgb_color(10, 14, 18));
+    statusBox->labelcolor(fl_rgb_color(180, 190, 200));
     statusBox->align(FL_ALIGN_INSIDE | FL_ALIGN_LEFT);
 
     // Apply initial dark style and keep it in sync
@@ -466,19 +670,12 @@ int main(int argc, char** argv) {
     textbuf->add_modify_callback(buf_mod_cb, (void*)editor);
     // start status update timer
     Fl::add_timeout(0.25, status_timer_cb, editor);
-    // Editor dark mode colors
-    editor->color(FL_BLACK);
-    editor->textfont(FL_COURIER);
-    editor->textsize(14);
 
-    // Apply initial dark style and keep it in sync
-    apply_dark_style(editor);
-    textbuf->add_modify_callback(buf_mod_cb, (void*)editor);
 
     // Make the editor expand with the window and prevent the window
     // from shrinking below the initial 800x600 size. Also set window color
     // for dark mode.
-    win->color(FL_BLACK);
+    win->color(fl_rgb_color(8, 12, 16));
     win->resizable(editor);
     win->size_range(800, 600);
 
