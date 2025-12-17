@@ -210,6 +210,34 @@ int TextEditor::handle(int event) {
                 return 1;
             }
             
+            if (key == FL_Up) {
+                if (Fl::event_state(FL_SHIFT)) {
+                    startSelection();
+                } else {
+                    clearSelection();
+                }
+                moveCursorUp();
+                if (Fl::event_state(FL_SHIFT)) {
+                    updateSelection();
+                }
+                redraw();
+                return 1;
+            }
+            
+            if (key == FL_Down) {
+                if (Fl::event_state(FL_SHIFT)) {
+                    startSelection();
+                } else {
+                    clearSelection();
+                }
+                moveCursorDown();
+                if (Fl::event_state(FL_SHIFT)) {
+                    updateSelection();
+                }
+                redraw();
+                return 1;
+            }
+            
             // Vim-style navigation in normal mode
             if (mode == 'n') {
                 if (key == 'h' && cursorPos > 0) {
@@ -219,6 +247,16 @@ int TextEditor::handle(int event) {
                 }
                 if (key == 'l' && cursorPos < gapBuffer.getLength()) {
                     cursorPos++;
+                    redraw();
+                    return 1;
+                }
+                if (key == 'j') {
+                    moveCursorDown();
+                    redraw();
+                    return 1;
+                }
+                if (key == 'k') {
+                    moveCursorUp();
                     redraw();
                     return 1;
                 }
@@ -341,4 +379,75 @@ void TextEditor::newFile() {
     redoStack.clear();
     strcpy(statusMsg, "New file");
     redraw();
+}
+
+void TextEditor::moveCursorUp() {
+    if (cursorPos == 0) return;
+    
+    // Find start of current line
+    int lineStart = cursorPos;
+    while (lineStart > 0 && gapBuffer.getCharAt(lineStart - 1) != '\n') {
+        lineStart--;
+    }
+    
+    // If at first line, can't move up
+    if (lineStart == 0) return;
+    
+    // Column position in current line
+    int col = cursorPos - lineStart;
+    
+    // Find start of previous line
+    int prevLineEnd = lineStart - 1; // The '\n' character
+    int prevLineStart = prevLineEnd;
+    while (prevLineStart > 0 && gapBuffer.getCharAt(prevLineStart - 1) != '\n') {
+        prevLineStart--;
+    }
+    
+    // Calculate new position
+    int prevLineLen = prevLineEnd - prevLineStart;
+    if (col > prevLineLen) {
+        cursorPos = prevLineEnd;
+    } else {
+        cursorPos = prevLineStart + col;
+    }
+}
+
+void TextEditor::moveCursorDown() {
+    int textLen = gapBuffer.getLength();
+    if (cursorPos >= textLen) return;
+    
+    // Find start of current line
+    int lineStart = cursorPos;
+    while (lineStart > 0 && gapBuffer.getCharAt(lineStart - 1) != '\n') {
+        lineStart--;
+    }
+    
+    // Column position in current line
+    int col = cursorPos - lineStart;
+    
+    // Find end of current line
+    int lineEnd = cursorPos;
+    while (lineEnd < textLen && gapBuffer.getCharAt(lineEnd) != '\n') {
+        lineEnd++;
+    }
+    
+    // If at last line, can't move down
+    if (lineEnd >= textLen) return;
+    
+    // Find start of next line (skip the '\n')
+    int nextLineStart = lineEnd + 1;
+    
+    // Find end of next line
+    int nextLineEnd = nextLineStart;
+    while (nextLineEnd < textLen && gapBuffer.getCharAt(nextLineEnd) != '\n') {
+        nextLineEnd++;
+    }
+    
+    // Calculate new position
+    int nextLineLen = nextLineEnd - nextLineStart;
+    if (col > nextLineLen) {
+        cursorPos = nextLineEnd;
+    } else {
+        cursorPos = nextLineStart + col;
+    }
 }

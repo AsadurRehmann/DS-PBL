@@ -43,6 +43,8 @@ public:
     void saveToFile(const char* filename);
     void loadFromFile(const char* filename);
     void newFile();
+    void moveCursorUp();
+    void moveCursorDown();
 };
 
 #endif
